@@ -157,8 +157,8 @@ export default defineSchema({
         gallery: v.optional(
           v.object({
             enabled: v.boolean(),
-            title: v.string(),
-            images: v.array(v.string()),
+            title: v.optional(v.string()),
+            images: v.optional(v.array(v.string())),
           }),
         ),
         faq: v.array(
