@@ -30,6 +30,7 @@ export const generateStore = action({
 
       let pageContent = "";
       let extractedImages: string[] = [];
+      let extractedReviews: ExtractedReview[] = [];
 
       try {
         const res = await fetch(args.productUrl, {
@@ -45,6 +46,9 @@ export const generateStore = action({
 
         // Extract images from HTML before trimming
         extractedImages = extractProductImages(fullHtml, args.productUrl);
+
+        // Extract reviews/testimonials from HTML
+        extractedReviews = extractReviews(fullHtml);
 
         // Trim HTML for Claude context
         pageContent = fullHtml.slice(0, 15000);
@@ -116,11 +120,16 @@ If you can't extract certain fields, make intelligent guesses based on the URL a
       });
 
       // ── Step 3: Generate store config with Claude ───────────────────
+      const reviewsContext =
+        extractedReviews.length > 0
+          ? `\n\nSCRAPED REAL REVIEWS FROM THE PRODUCT PAGE (use these as testimonials, clean up the text if needed):\n${JSON.stringify(extractedReviews.slice(0, 6), null, 2)}`
+          : "";
+
       const storeConfigRaw = await callClaude(CLAUDE_API_KEY, {
         system: `You are an elite e-commerce store designer and conversion rate optimization expert. You create stunning, high-converting single-product stores with unique layouts and themes. Return ONLY valid JSON, no markdown fences.`,
         prompt: `Create a complete store configuration for this product:
 
-Product: ${JSON.stringify(parsedProduct)}
+Product: ${JSON.stringify(parsedProduct)}${reviewsContext}
 
 Generate a JSON store config. Be creative with the store name — don't just use the product name. Pick a brandable, memorable store name that fits the niche.
 
@@ -187,9 +196,11 @@ Return this exact JSON structure:
     { "icon": "emoji", "title": "Benefit Title", "description": "Short benefit description" }
   ],
   "testimonials": [
-    { "name": "First L.", "text": "Realistic testimonial text", "rating": 5, "verified": true, "title": "Optional job title", "image": "optional avatar URL" },
-    { "name": "First L.", "text": "Realistic testimonial text", "rating": 5, "verified": true },
-    { "name": "First L.", "text": "Realistic testimonial text", "rating": 4, "verified": true }
+    // IF SCRAPED REVIEWS PROVIDED ABOVE: Use them! Clean up the text, format names as "First L.", keep real ratings
+    // IF NO SCRAPED REVIEWS: Generate realistic-sounding testimonials based on product benefits
+    { "name": "First L.", "text": "Actual review text from customer", "rating": 5, "verified": true, "title": "Optional job title", "image": "optional avatar URL" },
+    { "name": "First L.", "text": "Actual review text from customer", "rating": 5, "verified": true },
+    { "name": "First L.", "text": "Actual review text from customer", "rating": 4, "verified": true }
   ],
   "comparison": {
     "enabled": true or false,
@@ -462,4 +473,167 @@ function extractProductImages(html: string, baseUrl: string): string[] {
 
   // Return unique images, limit to 10
   return images.slice(0, 10);
+}
+
+// ── Type for extracted reviews ────────────────────────────────────────────
+interface ExtractedReview {
+  name: string;
+  text: string;
+  rating?: number;
+  date?: string;
+  title?: string;
+  verified?: boolean;
+}
+
+// ── Extract reviews/testimonials from HTML ────────────────────────────────
+function extractReviews(html: string): ExtractedReview[] {
+  const reviews: ExtractedReview[] = [];
+  const seen = new Set<string>();
+
+  // Helper to clean text
+  const cleanText = (text: string): string => {
+    return text
+      .replace(/<[^>]*>/g, "") // Remove HTML tags
+      .replace(/&nbsp;/g, " ")
+      .replace(/&amp;/g, "&")
+      .replace(/&quot;/g, '"')
+      .replace(/&#39;/g, "'")
+      .replace(/&lt;/g, "<")
+      .replace(/&gt;/g, ">")
+      .replace(/\s+/g, " ")
+      .trim();
+  };
+
+  // Helper to add unique review
+  const addReview = (review: ExtractedReview) => {
+    if (!review.text || review.text.length < 20) return;
+    if (review.text.length > 500)
+      review.text = review.text.slice(0, 497) + "...";
+
+    const key = review.text.slice(0, 50).toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+
+    reviews.push(review);
+  };
+
+  // Pattern 1: JSON-LD Review structured data
+  const jsonLdRegex =
+    /<script[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
+  let match;
+  while ((match = jsonLdRegex.exec(html)) !== null) {
+    try {
+      const jsonData = JSON.parse(match[1]);
+      const items = Array.isArray(jsonData) ? jsonData : [jsonData];
+
+      for (const item of items) {
+        // Direct reviews array
+        if (item.review) {
+          const reviewsArr = Array.isArray(item.review)
+            ? item.review
+            : [item.review];
+          for (const r of reviewsArr) {
+            addReview({
+              name: r.author?.name || r.author || "Customer",
+              text: cleanText(r.reviewBody || r.description || ""),
+              rating: r.reviewRating?.ratingValue || r.rating,
+              date: r.datePublished,
+              title: r.name,
+            });
+          }
+        }
+
+        // AggregateRating with reviews
+        if (item["@type"] === "Review") {
+          addReview({
+            name: item.author?.name || item.author || "Customer",
+            text: cleanText(item.reviewBody || item.description || ""),
+            rating: item.reviewRating?.ratingValue,
+            date: item.datePublished,
+            title: item.name,
+          });
+        }
+      }
+    } catch {
+      // Invalid JSON, skip
+    }
+  }
+
+  // Pattern 2: Common review container patterns
+  // Amazon-style reviews
+  const amazonReviewRegex =
+    /class="[^"]*review-text[^"]*"[^>]*>([^<]+(?:<[^>]+>[^<]*)*)<\/[^>]+>/gi;
+  while ((match = amazonReviewRegex.exec(html)) !== null) {
+    addReview({
+      name: "Verified Buyer",
+      text: cleanText(match[1]),
+      verified: true,
+    });
+  }
+
+  // Star rating patterns (look for rating near review text)
+  const ratingPatterns = [
+    /(\d)(?:\s*\/\s*5|\s*out\s*of\s*5|\s*stars?)/gi,
+    /rating['":\s]+(\d)/gi,
+    /stars?['":\s]+(\d)/gi,
+  ];
+
+  // Generic review blocks with data attributes
+  const dataReviewRegex =
+    /data-review-(?:text|body|content)=["']([^"']+)["']/gi;
+  while ((match = dataReviewRegex.exec(html)) !== null) {
+    addReview({
+      name: "Customer",
+      text: cleanText(match[1]),
+    });
+  }
+
+  // Pattern 3: Trustpilot/Yotpo style embedded reviews
+  const reviewBodyRegex =
+    /(?:review-?(?:body|text|content)|testimonial-?(?:text|content))[^>]*>([^<]{30,500})</gi;
+  while ((match = reviewBodyRegex.exec(html)) !== null) {
+    addReview({
+      name: "Customer",
+      text: cleanText(match[1]),
+    });
+  }
+
+  // Pattern 4: Blockquote testimonials
+  const blockquoteRegex = /<blockquote[^>]*>([^<]{30,500})</gi;
+  while ((match = blockquoteRegex.exec(html)) !== null) {
+    const text = cleanText(match[1]);
+    // Only add if it looks like a testimonial (has first-person language)
+    if (/\b(I|my|me|we|our|I'm|I've|I'd)\b/i.test(text)) {
+      addReview({
+        name: "Customer",
+        text,
+      });
+    }
+  }
+
+  // Pattern 5: Look for reviewer names near review text
+  const reviewerNameRegex =
+    /(?:reviewer?-?name|author-?name|customer-?name)[^>]*>([^<]{2,50})</gi;
+  const names: string[] = [];
+  while ((match = reviewerNameRegex.exec(html)) !== null) {
+    names.push(cleanText(match[1]));
+  }
+
+  // Assign names to reviews that don't have them
+  reviews.forEach((review, i) => {
+    if (review.name === "Customer" && names[i]) {
+      review.name = names[i];
+    }
+  });
+
+  // Pattern 6: Look for star ratings and associate with reviews
+  reviews.forEach((review) => {
+    if (!review.rating) {
+      // Default to 5 if we couldn't extract rating
+      review.rating = 5;
+    }
+    review.verified = review.verified ?? true;
+  });
+
+  return reviews.slice(0, 10);
 }
