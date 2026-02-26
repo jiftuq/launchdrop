@@ -1,0 +1,327 @@
+"use node";
+
+import { v } from "convex/values";
+import { action } from "./_generated/server";
+import { api } from "./_generated/api";
+
+// ── Main pipeline: scrape → analyze → generate store ──────────────────────
+export const generateStore = action({
+  args: {
+    storeId: v.id("stores"),
+    productUrl: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const CLAUDE_API_KEY = process.env.ANTHROPIC_API_KEY;
+    if (!CLAUDE_API_KEY) {
+      await ctx.runMutation(api.stores.updateStoreStatus, {
+        storeId: args.storeId,
+        status: "error",
+        errorMessage: "Missing ANTHROPIC_API_KEY environment variable",
+      });
+      return;
+    }
+
+    try {
+      // ── Step 1: Scrape product page ─────────────────────────────────
+      await ctx.runMutation(api.stores.updateStoreStatus, {
+        storeId: args.storeId,
+        status: "scraping",
+      });
+
+      let pageContent = "";
+      try {
+        const res = await fetch(args.productUrl, {
+          headers: {
+            "User-Agent":
+              "Mozilla/5.0 (compatible; LaunchDrop/1.0; +https://launchdrop.ai)",
+          },
+        });
+        pageContent = await res.text();
+        // Trim to ~12k chars to stay within context limits
+        pageContent = pageContent.slice(0, 12000);
+      } catch {
+        pageContent = `URL: ${args.productUrl} (could not fetch — generate based on URL patterns)`;
+      }
+
+      // ── Step 2: Analyze product with Claude ─────────────────────────
+      await ctx.runMutation(api.stores.updateStoreStatus, {
+        storeId: args.storeId,
+        status: "analyzing",
+      });
+
+      const productData = await callClaude(CLAUDE_API_KEY, {
+        system: `You are an expert e-commerce product analyst. Extract product information from the provided webpage HTML and URL. Return ONLY valid JSON, no markdown fences.`,
+        prompt: `Analyze this product page and extract structured data.
+
+URL: ${args.productUrl}
+
+Page content (HTML excerpt):
+${pageContent}
+
+Return this exact JSON structure:
+{
+  "name": "Product Name",
+  "description": "Compelling 2-3 sentence sales description",
+  "price": "29.99",
+  "currency": "USD",
+  "images": ["url1", "url2"],
+  "features": ["feature 1", "feature 2", "feature 3", "feature 4", "feature 5"],
+  "category": "Category Name",
+  "targetAudience": "Description of ideal buyer"
+}
+
+If you can't extract certain fields, make intelligent guesses based on the URL and any available content. Always return valid JSON.`,
+      });
+
+      let parsedProduct;
+      try {
+        parsedProduct = JSON.parse(cleanJson(productData));
+      } catch {
+        parsedProduct = {
+          name: "Premium Product",
+          description: "An exceptional product sourced for quality and value.",
+          price: "49.99",
+          currency: "USD",
+          images: [],
+          features: [
+            "Premium quality materials",
+            "Fast worldwide shipping",
+            "30-day money back guarantee",
+            "Eco-friendly packaging",
+            "Award-winning design",
+          ],
+          category: "General",
+          targetAudience: "Quality-conscious online shoppers",
+        };
+      }
+
+      await ctx.runMutation(api.stores.saveProductData, {
+        storeId: args.storeId,
+        productData: parsedProduct,
+      });
+
+      // ── Step 3: Generate store config with Claude ───────────────────
+      const storeConfigRaw = await callClaude(CLAUDE_API_KEY, {
+        system: `You are an elite e-commerce store designer and conversion rate optimization expert. You create stunning, high-converting single-product stores with unique layouts and themes. Return ONLY valid JSON, no markdown fences.`,
+        prompt: `Create a complete store configuration for this product:
+
+Product: ${JSON.stringify(parsedProduct)}
+
+Generate a JSON store config. Be creative with the store name — don't just use the product name. Pick a brandable, memorable store name that fits the niche.
+
+IMPORTANT: Choose the most appropriate THEME and LAYOUTS based on the product type and target audience:
+
+THEME OPTIONS (pick one):
+- "minimal" - Clean, lots of whitespace, subtle colors, modern sans-serif fonts. Best for: tech, premium, professional products
+- "bold" - High contrast, vibrant colors, strong typography, dynamic. Best for: youth, sports, energy products
+- "luxury" - Dark/gold tones, serif fonts, elegant spacing, premium feel. Best for: jewelry, fashion, high-end items
+- "playful" - Bright colors, rounded shapes, fun fonts, friendly. Best for: kids, pets, casual lifestyle products
+- "natural" - Earth tones, organic shapes, warm feel. Best for: eco, wellness, food, handmade products
+
+HERO LAYOUT OPTIONS (pick one):
+- "centered" - Centered text, product below, classic layout
+- "split" - Text on left, product image on right (50/50 split)
+- "fullscreen" - Large background image with overlay text
+- "minimal" - Just headline and CTA, very clean
+- "video-style" - Designed for video background (dark overlay)
+
+TESTIMONIAL LAYOUT OPTIONS (pick one):
+- "cards" - Individual cards in a grid
+- "carousel" - Single testimonial with arrows to navigate
+- "stacked" - Vertical stack with large quotes
+- "minimal" - Simple text with small avatars inline
+- "featured" - One large featured testimonial + smaller ones
+
+SECTION ORDER: Choose which sections to include and in what order. Not all sections are required.
+Available sections: hero, urgency, benefits, features, testimonials, comparison, gallery, faq, finalCta
+
+Return this exact JSON structure:
+{
+  "storeName": "BrandName",
+  "tagline": "Short memorable tagline",
+  "theme": "minimal|bold|luxury|playful|natural",
+  "layouts": {
+    "hero": "centered|split|fullscreen|minimal|video-style",
+    "testimonials": "cards|carousel|stacked|minimal|featured"
+  },
+  "sectionOrder": ["hero", "urgency", "benefits", "testimonials", "features", "faq", "finalCta"],
+  "colorScheme": {
+    "primary": "#hex",
+    "secondary": "#hex",
+    "accent": "#hex",
+    "background": "#hex",
+    "surface": "#hex",
+    "text": "#hex",
+    "textMuted": "#hex"
+  },
+  "fonts": {
+    "heading": "Google Font Name",
+    "body": "Google Font Name"
+  },
+  "hero": {
+    "headline": "Attention-grabbing headline",
+    "subheadline": "Supporting value proposition sentence",
+    "ctaText": "CTA button text",
+    "badgeText": "Optional badge like FREE SHIPPING or NEW",
+    "backgroundImage": "optional URL or null"
+  },
+  "benefits": [
+    { "icon": "emoji", "title": "Benefit Title", "description": "Short benefit description" },
+    { "icon": "emoji", "title": "Benefit Title", "description": "Short benefit description" },
+    { "icon": "emoji", "title": "Benefit Title", "description": "Short benefit description" },
+    { "icon": "emoji", "title": "Benefit Title", "description": "Short benefit description" }
+  ],
+  "testimonials": [
+    { "name": "First L.", "text": "Realistic testimonial text", "rating": 5, "verified": true, "title": "Optional job title", "image": "optional avatar URL" },
+    { "name": "First L.", "text": "Realistic testimonial text", "rating": 5, "verified": true },
+    { "name": "First L.", "text": "Realistic testimonial text", "rating": 4, "verified": true }
+  ],
+  "comparison": {
+    "enabled": true or false,
+    "title": "Why Choose Us?",
+    "us": { "name": "Our Product", "points": ["Feature 1", "Feature 2", "Feature 3"] },
+    "them": { "name": "Others", "points": ["Lacks X", "Expensive", "Poor quality"] }
+  },
+  "gallery": {
+    "enabled": true or false,
+    "title": "See It In Action",
+    "images": ["url1", "url2", "url3"]
+  },
+  "faq": [
+    { "question": "Common question?", "answer": "Helpful answer" },
+    { "question": "Common question?", "answer": "Helpful answer" },
+    { "question": "Common question?", "answer": "Helpful answer" }
+  ],
+  "urgency": {
+    "stockText": "Only X left in stock!",
+    "offerText": "Limited time: XX% off today only",
+    "timerEnabled": true,
+    "style": "banner|floating|inline"
+  },
+  "footer": {
+    "copyright": "© 2025 StoreName. All rights reserved.",
+    "links": [
+      { "label": "Privacy Policy", "href": "/privacy" },
+      { "label": "Terms of Service", "href": "/terms" },
+      { "label": "Contact Us", "href": "/contact" },
+      { "label": "Shipping Info", "href": "/shipping" }
+    ]
+  }
+}
+
+GUIDELINES:
+- For luxury products, use "luxury" theme with "split" or "fullscreen" hero and "featured" testimonials
+- For tech products, use "minimal" theme with "centered" hero and "cards" testimonials
+- For kids/fun products, use "playful" theme with "fullscreen" hero and "carousel" testimonials
+- Include "comparison" section for products with clear competitors
+- Include "gallery" only if product has multiple use cases or angles
+- Order sections strategically: urgency early for impulse buys, testimonials early for trust-building`,
+      });
+
+      let parsedConfig;
+      try {
+        parsedConfig = JSON.parse(cleanJson(storeConfigRaw));
+      } catch {
+        throw new Error("Failed to parse store configuration from AI");
+      }
+
+      // ── Step 4: Generate domain suggestions ───────────────────────
+      const domainSuggestionsRaw = await callClaude(CLAUDE_API_KEY, {
+        system: `You are a domain name expert. Generate creative, brandable, and available-sounding domain names. Return ONLY valid JSON, no markdown fences.`,
+        prompt: `Generate 5 domain name suggestions for this store:
+
+Store Name: ${parsedConfig.storeName}
+Product: ${parsedProduct.name}
+Category: ${parsedProduct.category}
+Target Audience: ${parsedProduct.targetAudience}
+
+Rules:
+- Short (max 15 characters before TLD)
+- Easy to spell and remember
+- Brandable and professional
+- Mix of .com, .co, .shop, .store TLDs
+- Avoid hyphens and numbers
+
+Return this exact JSON:
+{
+  "domains": [
+    "domain1.com",
+    "domain2.co",
+    "domain3.shop",
+    "domain4.store",
+    "domain5.com"
+  ]
+}`,
+      });
+
+      let suggestedDomains: string[] = [];
+      try {
+        const parsed = JSON.parse(cleanJson(domainSuggestionsRaw));
+        suggestedDomains = parsed.domains || [];
+      } catch {
+        // Fallback: generate from store name
+        const slug = parsedConfig.storeName
+          .toLowerCase()
+          .replace(/[^a-z0-9]/g, "");
+        suggestedDomains = [
+          `${slug}.com`,
+          `${slug}.co`,
+          `${slug}.shop`,
+          `get${slug}.com`,
+          `${slug}store.com`,
+        ];
+      }
+
+      // ── Step 5: Save everything ─────────────────────────────────────
+      await ctx.runMutation(api.stores.saveStoreConfig, {
+        storeId: args.storeId,
+        storeConfig: parsedConfig,
+        suggestedDomains,
+      });
+    } catch (error: any) {
+      await ctx.runMutation(api.stores.updateStoreStatus, {
+        storeId: args.storeId,
+        status: "error",
+        errorMessage: error.message || "Unknown error during generation",
+      });
+    }
+  },
+});
+
+// ── Claude API helper ─────────────────────────────────────────────────────
+async function callClaude(
+  apiKey: string,
+  opts: { system: string; prompt: string },
+): Promise<string> {
+  const response = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-api-key": apiKey,
+      "anthropic-version": "2023-06-01",
+    },
+    body: JSON.stringify({
+      model: "claude-sonnet-4-20250514",
+      max_tokens: 4096,
+      system: opts.system,
+      messages: [{ role: "user", content: opts.prompt }],
+    }),
+  });
+
+  if (!response.ok) {
+    const errText = await response.text();
+    throw new Error(`Claude API error ${response.status}: ${errText}`);
+  }
+
+  const data = await response.json();
+  const textBlock = data.content?.find((b: any) => b.type === "text");
+  return textBlock?.text ?? "";
+}
+
+// ── Strip markdown fences from JSON ───────────────────────────────────────
+function cleanJson(raw: string): string {
+  return raw
+    .replace(/^```(?:json)?\s*/i, "")
+    .replace(/\s*```$/i, "")
+    .trim();
+}
