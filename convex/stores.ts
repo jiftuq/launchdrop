@@ -96,6 +96,25 @@ export const saveProductData = mutation({
   },
 });
 
+// Helper to remove null values from an object (recursively)
+function removeNulls(obj: any): any {
+  if (obj === null || obj === undefined) return undefined;
+  if (Array.isArray(obj)) {
+    return obj.map(removeNulls).filter((v) => v !== undefined);
+  }
+  if (typeof obj === "object") {
+    const result: any = {};
+    for (const [key, value] of Object.entries(obj)) {
+      const cleaned = removeNulls(value);
+      if (cleaned !== undefined) {
+        result[key] = cleaned;
+      }
+    }
+    return result;
+  }
+  return obj;
+}
+
 // Save AI-generated store config
 export const saveStoreConfig = mutation({
   args: {
@@ -106,8 +125,10 @@ export const saveStoreConfig = mutation({
   },
   handler: async (ctx, args) => {
     const subdomain = `store-${args.storeId.toString().slice(-8)}`;
+    // Clean null values from storeConfig to match schema
+    const cleanedConfig = removeNulls(args.storeConfig);
     await ctx.db.patch(args.storeId, {
-      storeConfig: args.storeConfig,
+      storeConfig: cleanedConfig,
       generatedHtml: args.generatedHtml,
       subdomain,
       suggestedDomains: args.suggestedDomains,

@@ -29,16 +29,25 @@ export const generateStore = action({
       });
 
       let pageContent = "";
+      let extractedImages: string[] = [];
+
       try {
         const res = await fetch(args.productUrl, {
           headers: {
             "User-Agent":
-              "Mozilla/5.0 (compatible; LaunchDrop/1.0; +https://launchdrop.ai)",
+              "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            Accept:
+              "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.5",
           },
         });
-        pageContent = await res.text();
-        // Trim to ~12k chars to stay within context limits
-        pageContent = pageContent.slice(0, 12000);
+        const fullHtml = await res.text();
+
+        // Extract images from HTML before trimming
+        extractedImages = extractProductImages(fullHtml, args.productUrl);
+
+        // Trim HTML for Claude context
+        pageContent = fullHtml.slice(0, 15000);
       } catch {
         pageContent = `URL: ${args.productUrl} (could not fetch — generate based on URL patterns)`;
       }
@@ -94,6 +103,12 @@ If you can't extract certain fields, make intelligent guesses based on the URL a
           targetAudience: "Quality-conscious online shoppers",
         };
       }
+
+      // Merge scraped images with Claude's extracted images
+      // Prefer scraped images as they're more reliable
+      const claudeImages = parsedProduct.images || [];
+      const allImages = [...new Set([...extractedImages, ...claudeImages])];
+      parsedProduct.images = allImages.slice(0, 10); // Keep up to 10 images
 
       await ctx.runMutation(api.stores.saveProductData, {
         storeId: args.storeId,
@@ -324,4 +339,127 @@ function cleanJson(raw: string): string {
     .replace(/^```(?:json)?\s*/i, "")
     .replace(/\s*```$/i, "")
     .trim();
+}
+
+// ── Extract product images from HTML ──────────────────────────────────────
+function extractProductImages(html: string, baseUrl: string): string[] {
+  const images: string[] = [];
+  const seen = new Set<string>();
+
+  // Parse base URL for resolving relative paths
+  let urlBase: URL;
+  try {
+    urlBase = new URL(baseUrl);
+  } catch {
+    return [];
+  }
+
+  // Helper to resolve and validate image URL
+  const addImage = (src: string | null | undefined) => {
+    if (!src) return;
+
+    // Skip data URLs, tiny images, icons, logos, etc.
+    if (src.startsWith("data:")) return;
+    if (src.includes("icon") || src.includes("logo") || src.includes("sprite"))
+      return;
+    if (src.includes("1x1") || src.includes("pixel")) return;
+
+    // Resolve relative URLs
+    let fullUrl: string;
+    try {
+      if (src.startsWith("//")) {
+        fullUrl = `https:${src}`;
+      } else if (src.startsWith("/")) {
+        fullUrl = `${urlBase.origin}${src}`;
+      } else if (!src.startsWith("http")) {
+        fullUrl = new URL(src, baseUrl).href;
+      } else {
+        fullUrl = src;
+      }
+    } catch {
+      return;
+    }
+
+    // Skip duplicates
+    const normalized = fullUrl.split("?")[0]; // Remove query params for dedup
+    if (seen.has(normalized)) return;
+    seen.add(normalized);
+
+    // Only include likely product images (decent size indicators in URL)
+    const isLikelyProduct =
+      fullUrl.includes("product") ||
+      fullUrl.includes("item") ||
+      fullUrl.includes("goods") ||
+      fullUrl.includes("img") ||
+      /\d{3,}x\d{3,}/.test(fullUrl) || // Size in URL like 500x500
+      /_[A-Z]{2}\d{3,}/.test(fullUrl) || // Amazon pattern _AC_SL1500
+      fullUrl.includes("large") ||
+      fullUrl.includes("zoom") ||
+      fullUrl.includes("main");
+
+    if (isLikelyProduct || images.length < 3) {
+      images.push(fullUrl);
+    }
+  };
+
+  // Pattern 1: Standard img tags with src
+  const imgSrcRegex = /<img[^>]+src=["']([^"']+)["'][^>]*>/gi;
+  let match;
+  while ((match = imgSrcRegex.exec(html)) !== null) {
+    addImage(match[1]);
+  }
+
+  // Pattern 2: data-src (lazy loading)
+  const dataSrcRegex = /data-src=["']([^"']+)["']/gi;
+  while ((match = dataSrcRegex.exec(html)) !== null) {
+    addImage(match[1]);
+  }
+
+  // Pattern 3: data-large-image or data-zoom-image
+  const dataLargeRegex =
+    /data-(?:large|zoom|hires|original)-?(?:image|src)?=["']([^"']+)["']/gi;
+  while ((match = dataLargeRegex.exec(html)) !== null) {
+    addImage(match[1]);
+  }
+
+  // Pattern 4: srcset (get largest image)
+  const srcsetRegex = /srcset=["']([^"']+)["']/gi;
+  while ((match = srcsetRegex.exec(html)) !== null) {
+    const srcset = match[1];
+    // Parse srcset and get the largest image
+    const sources = srcset.split(",").map((s) => s.trim().split(/\s+/)[0]);
+    sources.forEach(addImage);
+  }
+
+  // Pattern 5: JSON-LD structured data
+  const jsonLdRegex =
+    /<script[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
+  while ((match = jsonLdRegex.exec(html)) !== null) {
+    try {
+      const jsonData = JSON.parse(match[1]);
+      // Handle single object or array
+      const items = Array.isArray(jsonData) ? jsonData : [jsonData];
+      for (const item of items) {
+        if (item.image) {
+          const imgs = Array.isArray(item.image) ? item.image : [item.image];
+          imgs.forEach((img: any) => {
+            if (typeof img === "string") addImage(img);
+            else if (img?.url) addImage(img.url);
+          });
+        }
+      }
+    } catch {
+      // Invalid JSON, skip
+    }
+  }
+
+  // Pattern 6: Open Graph images
+  const ogImageRegex =
+    /<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']/gi;
+  while ((match = ogImageRegex.exec(html)) !== null) {
+    addImage(match[1]);
+  }
+
+  // Return unique images, limit to 10
+  return images.slice(0, 10);
 }

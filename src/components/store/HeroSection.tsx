@@ -1,4 +1,12 @@
-import { ShoppingCart, Truck, RotateCcw, Lock } from "lucide-react";
+import { useState } from "react";
+import {
+  ShoppingCart,
+  Truck,
+  RotateCcw,
+  Lock,
+  ChevronLeft,
+  ChevronRight,
+} from "lucide-react";
 
 interface HeroSectionProps {
   config: any;
@@ -17,6 +25,9 @@ export default function HeroSection({
   layout,
   theme,
 }: HeroSectionProps) {
+  const [currentImageIndex, setCurrentImageIndex] = useState(0);
+  const images = product.images || [];
+
   const trustBadges = [
     { icon: <Truck size={16} />, text: "Free Shipping" },
     { icon: <RotateCcw size={16} />, text: "30-Day Returns" },
@@ -25,6 +36,96 @@ export default function HeroSection({
 
   // Theme-specific adjustments
   const themeStyles = getThemeStyles(theme, colors);
+
+  // Image gallery component
+  const ProductImageGallery = () => {
+    if (images.length === 0) {
+      return (
+        <div style={{ ...styles.imagePlaceholder, background: colors.surface }}>
+          <ShoppingCart size={64} style={{ color: colors.textMuted }} />
+        </div>
+      );
+    }
+
+    return (
+      <div style={styles.imageGallery}>
+        <div style={styles.mainImageContainer}>
+          {images.length > 1 && (
+            <button
+              onClick={() =>
+                setCurrentImageIndex((i) =>
+                  i === 0 ? images.length - 1 : i - 1,
+                )
+              }
+              style={{
+                ...styles.imageNavBtn,
+                left: 8,
+                background: `${colors.surface}ee`,
+              }}
+            >
+              <ChevronLeft size={20} color={colors.text} />
+            </button>
+          )}
+          <img
+            src={images[currentImageIndex]}
+            alt={product.name}
+            style={{
+              ...styles.mainImage,
+              borderRadius: themeStyles.imageRadius,
+            }}
+            onError={(e) => {
+              // Hide broken images
+              (e.target as HTMLImageElement).style.display = "none";
+            }}
+          />
+          {images.length > 1 && (
+            <button
+              onClick={() =>
+                setCurrentImageIndex((i) =>
+                  i === images.length - 1 ? 0 : i + 1,
+                )
+              }
+              style={{
+                ...styles.imageNavBtn,
+                right: 8,
+                background: `${colors.surface}ee`,
+              }}
+            >
+              <ChevronRight size={20} color={colors.text} />
+            </button>
+          )}
+        </div>
+        {images.length > 1 && (
+          <div style={styles.thumbnailRow}>
+            {images.slice(0, 5).map((img, i) => (
+              <button
+                key={i}
+                onClick={() => setCurrentImageIndex(i)}
+                style={{
+                  ...styles.thumbnail,
+                  borderColor:
+                    i === currentImageIndex ? colors.primary : "transparent",
+                  borderRadius: themeStyles.thumbnailRadius,
+                }}
+              >
+                <img
+                  src={img}
+                  alt={`${product.name} ${i + 1}`}
+                  style={{
+                    ...styles.thumbnailImg,
+                    borderRadius: themeStyles.thumbnailRadius,
+                  }}
+                  onError={(e) => {
+                    (e.target as HTMLImageElement).style.display = "none";
+                  }}
+                />
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  };
 
   if (layout === "split") {
     return (
@@ -98,22 +199,7 @@ export default function HeroSection({
             </div>
           </div>
           <div style={styles.splitImage}>
-            {product.images?.[0] ? (
-              <img
-                src={product.images[0]}
-                alt={product.name}
-                style={styles.productImage}
-              />
-            ) : (
-              <div
-                style={{
-                  ...styles.imagePlaceholder,
-                  background: colors.surface,
-                }}
-              >
-                <ShoppingCart size={64} style={{ color: colors.textMuted }} />
-              </div>
-            )}
+            <ProductImageGallery />
           </div>
         </div>
       </section>
@@ -155,7 +241,12 @@ export default function HeroSection({
             >
               {config.hero.headline}
             </h1>
-            <p style={{ ...styles.subheadlineFullscreen, color: "rgba(255,255,255,0.85)" }}>
+            <p
+              style={{
+                ...styles.subheadlineFullscreen,
+                color: "rgba(255,255,255,0.85)",
+              }}
+            >
               {config.hero.subheadline}
             </p>
             <div style={{ ...styles.priceRow, justifyContent: "center" }}>
@@ -241,6 +332,14 @@ export default function HeroSection({
         <p style={{ ...styles.subheadline, color: colors.textMuted }}>
           {config.hero.subheadline}
         </p>
+
+        {/* Product Image Gallery */}
+        {images.length > 0 && (
+          <div style={styles.centeredImageWrapper}>
+            <ProductImageGallery />
+          </div>
+        )}
+
         <div style={styles.priceRow}>
           <span
             style={{
@@ -282,32 +381,50 @@ function getThemeStyles(theme: string, colors: any) {
     case "luxury":
       return {
         headingFallback: "serif",
-        badge: { borderRadius: 4, letterSpacing: "0.1em", textTransform: "uppercase" as const },
+        badge: {
+          borderRadius: 4,
+          letterSpacing: "0.1em",
+          textTransform: "uppercase" as const,
+        },
         cta: { borderRadius: 4, letterSpacing: "0.05em" },
+        imageRadius: 4,
+        thumbnailRadius: 2,
       };
     case "playful":
       return {
         headingFallback: "sans-serif",
         badge: { borderRadius: 20, fontWeight: 700 },
         cta: { borderRadius: 30, fontWeight: 800 },
+        imageRadius: 24,
+        thumbnailRadius: 12,
       };
     case "bold":
       return {
         headingFallback: "sans-serif",
-        badge: { borderRadius: 8, fontWeight: 800, textTransform: "uppercase" as const },
+        badge: {
+          borderRadius: 8,
+          fontWeight: 800,
+          textTransform: "uppercase" as const,
+        },
         cta: { borderRadius: 12, fontWeight: 800, fontSize: "1.1rem" },
+        imageRadius: 16,
+        thumbnailRadius: 8,
       };
     case "natural":
       return {
         headingFallback: "serif",
         badge: { borderRadius: 16, background: `${colors.primary}22` },
         cta: { borderRadius: 24 },
+        imageRadius: 20,
+        thumbnailRadius: 10,
       };
     default: // minimal
       return {
         headingFallback: "sans-serif",
         badge: { borderRadius: 999 },
         cta: { borderRadius: 999 },
+        imageRadius: 16,
+        thumbnailRadius: 8,
       };
   }
 }
@@ -499,5 +616,63 @@ const styles: Record<string, React.CSSProperties> = {
     fontWeight: 700,
     border: "none",
     cursor: "pointer",
+  },
+
+  // Image gallery styles
+  centeredImageWrapper: {
+    maxWidth: 500,
+    margin: "0 auto 32px",
+  },
+  imageGallery: {
+    width: "100%",
+  },
+  mainImageContainer: {
+    position: "relative" as const,
+    width: "100%",
+    aspectRatio: "1",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    overflow: "hidden",
+  },
+  mainImage: {
+    width: "100%",
+    height: "100%",
+    objectFit: "contain" as const,
+  },
+  imageNavBtn: {
+    position: "absolute" as const,
+    top: "50%",
+    transform: "translateY(-50%)",
+    width: 40,
+    height: 40,
+    borderRadius: "50%",
+    border: "none",
+    cursor: "pointer",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    zIndex: 10,
+    transition: "opacity 0.2s",
+  },
+  thumbnailRow: {
+    display: "flex",
+    gap: 8,
+    marginTop: 12,
+    justifyContent: "center",
+  },
+  thumbnail: {
+    width: 60,
+    height: 60,
+    padding: 0,
+    border: "2px solid transparent",
+    background: "none",
+    cursor: "pointer",
+    overflow: "hidden",
+  },
+  thumbnailImg: {
+    width: "100%",
+    height: "100%",
+    objectFit: "cover" as const,
   },
 };
