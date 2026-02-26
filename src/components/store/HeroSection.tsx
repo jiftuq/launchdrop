@@ -97,7 +97,7 @@ export default function HeroSection({
         </div>
         {images.length > 1 && (
           <div style={styles.thumbnailRow}>
-            {images.slice(0, 5).map((img, i) => (
+            {images.slice(0, 5).map((img: string, i: number) => (
               <button
                 key={i}
                 onClick={() => setCurrentImageIndex(i)}

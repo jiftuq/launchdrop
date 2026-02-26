@@ -9,66 +9,127 @@ import { api } from "./_generated/api";
  *
  * This module handles custom domain SSL and routing via Cloudflare for SaaS.
  *
- * Setup required:
- * 1. Enable Cloudflare for SaaS on your zone
- * 2. Create a fallback origin (e.g., stores.launchdrop.app)
- * 3. Set environment variables:
- *    - CLOUDFLARE_API_TOKEN: API token with Zone:SSL and Custom Hostnames permissions
- *    - CLOUDFLARE_ZONE_ID: Your Cloudflare zone ID
+ * SETUP INSTRUCTIONS:
+ * ===================
  *
- * Pricing: $0.10/active custom hostname/month (after first 100 free)
+ * 1. Go to Cloudflare Dashboard → Your Domain → SSL/TLS → Custom Hostnames
+ *
+ * 2. Enable "Cloudflare for SaaS"
+ *
+ * 3. Set your fallback origin:
+ *    - Create a DNS record: stores.launchdrop.app → your server IP
+ *    - Or use a worker/pages URL as fallback
+ *
+ * 4. Create an API Token:
+ *    - Go to My Profile → API Tokens → Create Token
+ *    - Permissions needed:
+ *      • Zone → SSL and Certificates → Edit
+ *      • Zone → Custom Hostnames → Edit
+ *    - Zone Resources: Include → Specific Zone → your domain
+ *
+ * 5. Get your Zone ID:
+ *    - Dashboard → Your Domain → Overview (right sidebar)
+ *
+ * 6. Set environment variables in Convex:
+ *    npx convex env set CLOUDFLARE_API_TOKEN your-token
+ *    npx convex env set CLOUDFLARE_ZONE_ID your-zone-id
+ *    npx convex env set CLOUDFLARE_FALLBACK_ORIGIN stores.launchdrop.app
+ *
+ * Pricing: $0.10/active custom hostname/month (first 100 free)
  */
 
-interface CustomHostnameResponse {
+const FALLBACK_ORIGIN = "stores.launchdrop.app";
+
+interface CloudflareResponse<T> {
   success: boolean;
-  result?: {
-    id: string;
-    hostname: string;
-    ssl: {
-      status: string;
-      validation_records?: Array<{
-        txt_name: string;
-        txt_value: string;
-      }>;
-    };
-    status: string;
-    verification_errors?: string[];
-  };
-  errors?: Array<{ message: string }>;
+  result?: T;
+  errors?: Array<{ code: number; message: string }>;
+  messages?: Array<{ message: string }>;
 }
 
-// Add a custom hostname to Cloudflare for SaaS
+interface CustomHostname {
+  id: string;
+  hostname: string;
+  ssl: {
+    id?: string;
+    status:
+      | "initializing"
+      | "pending_validation"
+      | "pending_issuance"
+      | "pending_deployment"
+      | "active"
+      | "deleted";
+    method: "http" | "txt" | "email";
+    type: "dv";
+    validation_records?: Array<{
+      txt_name: string;
+      txt_value: string;
+    }>;
+    validation_errors?: Array<{ message: string }>;
+  };
+  status:
+    | "active"
+    | "pending"
+    | "active_redeploying"
+    | "moved"
+    | "pending_deletion"
+    | "deleted";
+  verification_errors?: string[];
+  ownership_verification?: {
+    type: "txt";
+    name: string;
+    value: string;
+  };
+  ownership_verification_http?: {
+    http_url: string;
+    http_body: string;
+  };
+  created_at: string;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ADD CUSTOM HOSTNAME
+// ═══════════════════════════════════════════════════════════════════════════
+
 export const addCustomHostname = action({
   args: {
     domainId: v.id("domains"),
     hostname: v.string(),
+    storeId: v.id("stores"),
   },
   handler: async (ctx, args) => {
     const CLOUDFLARE_API_TOKEN = process.env.CLOUDFLARE_API_TOKEN;
     const CLOUDFLARE_ZONE_ID = process.env.CLOUDFLARE_ZONE_ID;
 
+    // Update status to pending
+    await ctx.runMutation(api.domains.updateDomainStatus, {
+      domainId: args.domainId,
+      status: "pending_purchase",
+    });
+
     if (!CLOUDFLARE_API_TOKEN || !CLOUDFLARE_ZONE_ID) {
-      // For demo/development, simulate success
-      console.log("Cloudflare credentials not configured, simulating...");
+      console.log("⚠️ Cloudflare not configured - running in simulation mode");
 
-      await ctx.runMutation(api.domains.updateSslStatus, {
-        domainId: args.domainId,
-        sslStatus: "pending",
-      });
-
-      // Simulate SSL provisioning delay
-      await new Promise((resolve) => setTimeout(resolve, 2000));
+      // Simulate for development
+      await new Promise((resolve) => setTimeout(resolve, 1500));
 
       await ctx.runMutation(api.domains.updateSslStatus, {
         domainId: args.domainId,
         sslStatus: "active",
       });
 
+      await ctx.runMutation(api.domains.connectDomainToStore, {
+        domainId: args.domainId,
+        storeId: args.storeId,
+      });
+
       return {
         success: true,
+        simulated: true,
         hostname: args.hostname,
         status: "active",
-        message: "Domain configured (simulated)",
+        message:
+          "Domain connected (simulation mode - set CLOUDFLARE_API_TOKEN for production)",
       };
     }
 
@@ -85,94 +146,194 @@ export const addCustomHostname = action({
           body: JSON.stringify({
             hostname: args.hostname,
             ssl: {
-              method: "http",
+              method: "http", // HTTP validation (automatic)
               type: "dv",
               settings: {
                 min_tls_version: "1.2",
+                http2: "on",
+                early_hints: "on",
               },
+              bundle_method: "ubiquitous",
+              wildcard: false,
+            },
+            custom_metadata: {
+              storeId: args.storeId,
+              domainId: args.domainId,
             },
           }),
-        }
+        },
       );
 
-      const data: CustomHostnameResponse = await response.json();
+      const data: CloudflareResponse<CustomHostname> = await response.json();
 
-      if (!data.success) {
-        throw new Error(data.errors?.[0]?.message || "Failed to add custom hostname");
+      if (!data.success || !data.result) {
+        const errorMsg =
+          data.errors?.[0]?.message || "Failed to add custom hostname";
+        console.error("Cloudflare error:", errorMsg);
+
+        await ctx.runMutation(api.domains.updateDomainStatus, {
+          domainId: args.domainId,
+          status: "error",
+        });
+
+        return {
+          success: false,
+          error: errorMsg,
+        };
       }
 
-      // Update domain with SSL status
+      const hostname = data.result;
+
+      // Save Cloudflare hostname ID and DNS records
+      await ctx.runMutation(api.domains.saveDnsRecords, {
+        domainId: args.domainId,
+        dnsRecords: [
+          {
+            type: "CNAME",
+            name: args.hostname,
+            value: FALLBACK_ORIGIN,
+            ttl: 3600,
+          },
+        ],
+      });
+
+      // Update SSL status based on Cloudflare response
+      const sslStatus = hostname.ssl.status === "active" ? "active" : "pending";
       await ctx.runMutation(api.domains.updateSslStatus, {
         domainId: args.domainId,
-        sslStatus: "pending",
+        sslStatus,
       });
+
+      // If SSL is already active, connect the domain
+      if (hostname.ssl.status === "active" && hostname.status === "active") {
+        await ctx.runMutation(api.domains.connectDomainToStore, {
+          domainId: args.domainId,
+          storeId: args.storeId,
+        });
+      }
 
       return {
         success: true,
         hostname: args.hostname,
-        hostnameId: data.result?.id,
-        status: data.result?.ssl.status,
-        validationRecords: data.result?.ssl.validation_records,
+        hostnameId: hostname.id,
+        sslStatus: hostname.ssl.status,
+        hostnameStatus: hostname.status,
+        ownershipVerification: hostname.ownership_verification,
+        validationRecords: hostname.ssl.validation_records,
+        message:
+          hostname.ssl.status === "active"
+            ? "Domain connected successfully!"
+            : "Domain added - SSL certificate is being provisioned",
       };
     } catch (error: any) {
       console.error("Cloudflare API error:", error);
 
-      await ctx.runMutation(api.domains.updateSslStatus, {
+      await ctx.runMutation(api.domains.updateDomainStatus, {
         domainId: args.domainId,
-        sslStatus: "error",
+        status: "error",
       });
 
       return {
         success: false,
-        error: error.message,
+        error: error.message || "Failed to connect domain",
       };
     }
   },
 });
 
-// Check SSL status for a custom hostname
-export const checkSslStatus = action({
+// ═══════════════════════════════════════════════════════════════════════════
+// VERIFY DNS AND CHECK SSL STATUS
+// ═══════════════════════════════════════════════════════════════════════════
+
+export const verifyAndActivateDomain = action({
   args: {
+    domainId: v.id("domains"),
     hostname: v.string(),
+    storeId: v.id("stores"),
   },
   handler: async (ctx, args) => {
     const CLOUDFLARE_API_TOKEN = process.env.CLOUDFLARE_API_TOKEN;
     const CLOUDFLARE_ZONE_ID = process.env.CLOUDFLARE_ZONE_ID;
 
     if (!CLOUDFLARE_API_TOKEN || !CLOUDFLARE_ZONE_ID) {
-      return { status: "active", message: "Simulated (no Cloudflare config)" };
+      // Simulation mode
+      await ctx.runMutation(api.domains.updateSslStatus, {
+        domainId: args.domainId,
+        sslStatus: "active",
+      });
+      await ctx.runMutation(api.domains.connectDomainToStore, {
+        domainId: args.domainId,
+        storeId: args.storeId,
+      });
+      return { success: true, status: "active", simulated: true };
     }
 
     try {
+      // Get hostname status from Cloudflare
       const response = await fetch(
-        `https://api.cloudflare.com/client/v4/zones/${CLOUDFLARE_ZONE_ID}/custom_hostnames?hostname=${args.hostname}`,
+        `https://api.cloudflare.com/client/v4/zones/${CLOUDFLARE_ZONE_ID}/custom_hostnames?hostname=${encodeURIComponent(args.hostname)}`,
         {
           headers: {
             Authorization: `Bearer ${CLOUDFLARE_API_TOKEN}`,
           },
-        }
+        },
       );
 
-      const data = await response.json();
+      const data: CloudflareResponse<CustomHostname[]> = await response.json();
 
-      if (data.result && data.result.length > 0) {
-        const hostname = data.result[0];
+      if (!data.success || !data.result || data.result.length === 0) {
         return {
-          status: hostname.ssl?.status || "unknown",
-          hostnameStatus: hostname.status,
-          verificationErrors: hostname.verification_errors,
+          success: false,
+          error: "Domain not found in Cloudflare. Please add it first.",
         };
       }
 
-      return { status: "not_found" };
+      const hostname = data.result[0];
+
+      // Update SSL status in our database
+      const sslStatus = hostname.ssl.status === "active" ? "active" : "pending";
+      await ctx.runMutation(api.domains.updateSslStatus, {
+        domainId: args.domainId,
+        sslStatus,
+      });
+
+      // If both hostname and SSL are active, connect the domain
+      if (hostname.status === "active" && hostname.ssl.status === "active") {
+        await ctx.runMutation(api.domains.connectDomainToStore, {
+          domainId: args.domainId,
+          storeId: args.storeId,
+        });
+
+        return {
+          success: true,
+          status: "active",
+          message: "Domain verified and connected!",
+        };
+      }
+
+      // Return current status with any errors
+      return {
+        success: true,
+        status: hostname.ssl.status,
+        hostnameStatus: hostname.status,
+        verificationErrors: hostname.verification_errors,
+        sslErrors: hostname.ssl.validation_errors?.map((e) => e.message),
+        message: `SSL Status: ${hostname.ssl.status}. Hostname Status: ${hostname.status}`,
+      };
     } catch (error: any) {
-      return { status: "error", error: error.message };
+      return {
+        success: false,
+        error: error.message || "Failed to verify domain",
+      };
     }
   },
 });
 
-// Delete a custom hostname from Cloudflare
-export const deleteCustomHostname = action({
+// ═══════════════════════════════════════════════════════════════════════════
+// GET HOSTNAME STATUS
+// ═══════════════════════════════════════════════════════════════════════════
+
+export const getHostnameStatus = action({
   args: {
     hostname: v.string(),
   },
@@ -181,24 +342,86 @@ export const deleteCustomHostname = action({
     const CLOUDFLARE_ZONE_ID = process.env.CLOUDFLARE_ZONE_ID;
 
     if (!CLOUDFLARE_API_TOKEN || !CLOUDFLARE_ZONE_ID) {
-      return { success: true, message: "Simulated deletion" };
+      return {
+        success: true,
+        status: "active",
+        sslStatus: "active",
+        simulated: true,
+      };
+    }
+
+    try {
+      const response = await fetch(
+        `https://api.cloudflare.com/client/v4/zones/${CLOUDFLARE_ZONE_ID}/custom_hostnames?hostname=${encodeURIComponent(args.hostname)}`,
+        {
+          headers: {
+            Authorization: `Bearer ${CLOUDFLARE_API_TOKEN}`,
+          },
+        },
+      );
+
+      const data: CloudflareResponse<CustomHostname[]> = await response.json();
+
+      if (!data.success || !data.result || data.result.length === 0) {
+        return { success: false, status: "not_found" };
+      }
+
+      const hostname = data.result[0];
+
+      return {
+        success: true,
+        id: hostname.id,
+        hostname: hostname.hostname,
+        status: hostname.status,
+        sslStatus: hostname.ssl.status,
+        sslMethod: hostname.ssl.method,
+        verificationErrors: hostname.verification_errors,
+        sslErrors: hostname.ssl.validation_errors?.map((e) => e.message),
+        ownershipVerification: hostname.ownership_verification,
+        createdAt: hostname.created_at,
+      };
+    } catch (error: any) {
+      return { success: false, error: error.message };
+    }
+  },
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// DELETE CUSTOM HOSTNAME
+// ═══════════════════════════════════════════════════════════════════════════
+
+export const deleteCustomHostname = action({
+  args: {
+    hostname: v.string(),
+    domainId: v.optional(v.id("domains")),
+  },
+  handler: async (ctx, args) => {
+    const CLOUDFLARE_API_TOKEN = process.env.CLOUDFLARE_API_TOKEN;
+    const CLOUDFLARE_ZONE_ID = process.env.CLOUDFLARE_ZONE_ID;
+
+    if (!CLOUDFLARE_API_TOKEN || !CLOUDFLARE_ZONE_ID) {
+      return { success: true, simulated: true };
     }
 
     try {
       // First, find the hostname ID
       const listResponse = await fetch(
-        `https://api.cloudflare.com/client/v4/zones/${CLOUDFLARE_ZONE_ID}/custom_hostnames?hostname=${args.hostname}`,
+        `https://api.cloudflare.com/client/v4/zones/${CLOUDFLARE_ZONE_ID}/custom_hostnames?hostname=${encodeURIComponent(args.hostname)}`,
         {
           headers: {
             Authorization: `Bearer ${CLOUDFLARE_API_TOKEN}`,
           },
-        }
+        },
       );
 
-      const listData = await listResponse.json();
+      const listData: CloudflareResponse<CustomHostname[]> =
+        await listResponse.json();
 
       if (!listData.result || listData.result.length === 0) {
-        return { success: true, message: "Hostname not found (already deleted)" };
+        return {
+          success: true,
+          message: "Hostname not found (already deleted)",
+        };
       }
 
       const hostnameId = listData.result[0].id;
@@ -211,14 +434,17 @@ export const deleteCustomHostname = action({
           headers: {
             Authorization: `Bearer ${CLOUDFLARE_API_TOKEN}`,
           },
-        }
+        },
       );
 
-      const deleteData = await deleteResponse.json();
+      const deleteData: CloudflareResponse<{ id: string }> =
+        await deleteResponse.json();
 
       return {
         success: deleteData.success,
-        message: deleteData.success ? "Hostname deleted" : "Failed to delete hostname",
+        message: deleteData.success
+          ? "Domain disconnected"
+          : "Failed to disconnect domain",
       };
     } catch (error: any) {
       return { success: false, error: error.message };
@@ -226,22 +452,72 @@ export const deleteCustomHostname = action({
   },
 });
 
-/**
- * Domain Connection Instructions for Users
- *
- * When a user wants to connect their own domain (not purchased through us):
- *
- * 1. User adds CNAME record:
- *    - Host: @ (or their subdomain)
- *    - Value: stores.launchdrop.app
- *
- * 2. User adds CNAME record for www:
- *    - Host: www
- *    - Value: stores.launchdrop.app
- *
- * 3. We call addCustomHostname() to register with Cloudflare
- *
- * 4. Cloudflare handles SSL certificate provisioning automatically
- *
- * 5. Our server checks the Host header and serves the correct store
- */
+// ═══════════════════════════════════════════════════════════════════════════
+// REFRESH SSL CERTIFICATE
+// ═══════════════════════════════════════════════════════════════════════════
+
+export const refreshSslCertificate = action({
+  args: {
+    hostname: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const CLOUDFLARE_API_TOKEN = process.env.CLOUDFLARE_API_TOKEN;
+    const CLOUDFLARE_ZONE_ID = process.env.CLOUDFLARE_ZONE_ID;
+
+    if (!CLOUDFLARE_API_TOKEN || !CLOUDFLARE_ZONE_ID) {
+      return { success: true, simulated: true };
+    }
+
+    try {
+      // Get hostname ID
+      const listResponse = await fetch(
+        `https://api.cloudflare.com/client/v4/zones/${CLOUDFLARE_ZONE_ID}/custom_hostnames?hostname=${encodeURIComponent(args.hostname)}`,
+        {
+          headers: {
+            Authorization: `Bearer ${CLOUDFLARE_API_TOKEN}`,
+          },
+        },
+      );
+
+      const listData: CloudflareResponse<CustomHostname[]> =
+        await listResponse.json();
+
+      if (!listData.result || listData.result.length === 0) {
+        return { success: false, error: "Hostname not found" };
+      }
+
+      const hostnameId = listData.result[0].id;
+
+      // Trigger SSL refresh by updating the hostname
+      const refreshResponse = await fetch(
+        `https://api.cloudflare.com/client/v4/zones/${CLOUDFLARE_ZONE_ID}/custom_hostnames/${hostnameId}`,
+        {
+          method: "PATCH",
+          headers: {
+            Authorization: `Bearer ${CLOUDFLARE_API_TOKEN}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            ssl: {
+              method: "http",
+              type: "dv",
+            },
+          }),
+        },
+      );
+
+      const refreshData: CloudflareResponse<CustomHostname> =
+        await refreshResponse.json();
+
+      return {
+        success: refreshData.success,
+        sslStatus: refreshData.result?.ssl.status,
+        message: refreshData.success
+          ? "SSL refresh initiated"
+          : "Failed to refresh SSL",
+      };
+    } catch (error: any) {
+      return { success: false, error: error.message };
+    }
+  },
+});

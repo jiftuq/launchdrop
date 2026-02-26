@@ -11,7 +11,9 @@ import {
   Sparkles,
   Shield,
   ExternalLink,
+  Link2,
 } from "lucide-react";
+import ConnectDomain from "./ConnectDomain";
 
 interface DomainResult {
   domain: string;
@@ -28,12 +30,15 @@ interface DomainSelectorProps {
   onDomainPurchased?: (domain: string) => void;
 }
 
+type TabType = "buy" | "connect";
+
 export default function DomainSelector({
   storeId,
   suggestedDomains,
   userId,
   onDomainPurchased,
 }: DomainSelectorProps) {
+  const [activeTab, setActiveTab] = useState<TabType>("buy");
   const [domainResults, setDomainResults] = useState<DomainResult[]>([]);
   const [checking, setChecking] = useState(false);
   const [purchasing, setPurchasing] = useState<string | null>(null);
@@ -134,136 +139,176 @@ export default function DomainSelector({
           <Globe size={20} />
         </div>
         <div>
-          <h3 style={styles.title}>Claim Your Domain</h3>
+          <h3 style={styles.title}>Get Your Domain</h3>
           <p style={styles.subtitle}>
-            AI-suggested domains based on your store
+            Buy a new domain or connect one you already own
           </p>
         </div>
       </div>
 
-      {checking ? (
-        <div style={styles.loading}>
-          <Loader2
-            size={24}
-            className="spin"
-            style={{ animation: "spin 1s linear infinite" }}
-          />
-          <span>Checking availability...</span>
-        </div>
-      ) : (
+      {/* Tab Navigation */}
+      <div style={styles.tabs}>
+        <button
+          style={{
+            ...styles.tab,
+            ...(activeTab === "buy" ? styles.tabActive : {}),
+          }}
+          onClick={() => setActiveTab("buy")}
+        >
+          <ShoppingCart size={16} />
+          Buy Domain
+        </button>
+        <button
+          style={{
+            ...styles.tab,
+            ...(activeTab === "connect" ? styles.tabActive : {}),
+          }}
+          onClick={() => setActiveTab("connect")}
+        >
+          <Link2 size={16} />
+          Connect Your Own
+        </button>
+      </div>
+
+      {/* Connect Your Own Domain Tab */}
+      {activeTab === "connect" && (
+        <ConnectDomain
+          storeId={storeId}
+          onDomainConnected={onDomainPurchased}
+        />
+      )}
+
+      {/* Buy Domain Tab */}
+      {activeTab === "buy" && (
         <>
-          <div style={styles.domainList}>
-            {domainResults.map((result) => (
-              <div
-                key={result.domain}
-                style={{
-                  ...styles.domainItem,
-                  opacity: result.available ? 1 : 0.5,
-                  borderColor: result.available
-                    ? "var(--primary)"
-                    : "var(--border)",
-                }}
-              >
-                <div style={styles.domainInfo}>
-                  <div style={styles.domainName}>
-                    {result.available ? (
-                      <Check size={16} style={{ color: "var(--primary)" }} />
-                    ) : (
-                      <X size={16} style={{ color: "var(--accent)" }} />
-                    )}
-                    <span>{result.domain}</span>
-                    {result.premium && (
-                      <span style={styles.premiumBadge}>
-                        <Sparkles size={10} /> Premium
-                      </span>
-                    )}
-                  </div>
-                  <div style={styles.domainPricing}>
-                    {result.available ? (
-                      <>
-                        <span style={styles.price}>${result.price}</span>
-                        <span style={styles.renewal}>
-                          /first year • ${result.renewalPrice}/yr renewal
-                        </span>
-                      </>
-                    ) : (
-                      <span style={styles.unavailable}>Unavailable</span>
-                    )}
-                  </div>
-                </div>
-
-                {result.available && (
-                  <button
-                    style={styles.buyButton}
-                    onClick={() => handlePurchase(result)}
-                    disabled={purchasing !== null}
-                  >
-                    {purchasing === result.domain ? (
-                      <Loader2
-                        size={16}
-                        style={{ animation: "spin 1s linear infinite" }}
-                      />
-                    ) : (
-                      <>
-                        <ShoppingCart size={16} />
-                        Buy Now
-                      </>
-                    )}
-                  </button>
-                )}
-              </div>
-            ))}
-          </div>
-
-          {/* Custom domain input */}
-          {showCustomInput ? (
-            <div style={styles.customInputContainer}>
-              <input
-                type="text"
-                placeholder="yourdomain.com"
-                value={customDomain}
-                onChange={(e) => setCustomDomain(e.target.value)}
-                onKeyDown={(e) =>
-                  e.key === "Enter" && handleCustomDomainCheck()
-                }
-                style={styles.customInput}
-                autoFocus
+          {checking ? (
+            <div style={styles.loading}>
+              <Loader2
+                size={24}
+                className="spin"
+                style={{ animation: "spin 1s linear infinite" }}
               />
-              <button
-                style={styles.checkButton}
-                onClick={handleCustomDomainCheck}
-              >
-                Check
-              </button>
-              <button
-                style={styles.cancelButton}
-                onClick={() => setShowCustomInput(false)}
-              >
-                Cancel
-              </button>
+              <span>Checking availability...</span>
             </div>
           ) : (
-            <button
-              style={styles.customDomainLink}
-              onClick={() => setShowCustomInput(true)}
-            >
-              <ExternalLink size={14} />
-              Search for a different domain
-            </button>
-          )}
+            <>
+              <div style={styles.domainList}>
+                {domainResults.map((result) => (
+                  <div
+                    key={result.domain}
+                    style={{
+                      ...styles.domainItem,
+                      opacity: result.available ? 1 : 0.5,
+                      borderColor: result.available
+                        ? "var(--primary)"
+                        : "var(--border)",
+                    }}
+                  >
+                    <div style={styles.domainInfo}>
+                      <div style={styles.domainName}>
+                        {result.available ? (
+                          <Check
+                            size={16}
+                            style={{ color: "var(--primary)" }}
+                          />
+                        ) : (
+                          <X size={16} style={{ color: "var(--accent)" }} />
+                        )}
+                        <span>{result.domain}</span>
+                        {result.premium && (
+                          <span style={styles.premiumBadge}>
+                            <Sparkles size={10} /> Premium
+                          </span>
+                        )}
+                      </div>
+                      <div style={styles.domainPricing}>
+                        {result.available ? (
+                          <>
+                            <span style={styles.price}>${result.price}</span>
+                            <span style={styles.renewal}>
+                              /first year • ${result.renewalPrice}/yr renewal
+                            </span>
+                          </>
+                        ) : (
+                          <span style={styles.unavailable}>Unavailable</span>
+                        )}
+                      </div>
+                    </div>
 
-          {/* Pricing info */}
-          <div style={styles.pricingInfo}>
-            <p>
-              <strong>What's included:</strong>
-            </p>
-            <ul style={styles.featureList}>
-              <li>Free SSL certificate (auto-renewed)</li>
-              <li>Instant DNS configuration</li>
-              <li>Connected to your store automatically</li>
-              <li>24/7 domain monitoring</li>
-            </ul>
-          </div>
+                    {result.available && (
+                      <button
+                        style={styles.buyButton}
+                        onClick={() => handlePurchase(result)}
+                        disabled={purchasing !== null}
+                      >
+                        {purchasing === result.domain ? (
+                          <Loader2
+                            size={16}
+                            style={{ animation: "spin 1s linear infinite" }}
+                          />
+                        ) : (
+                          <>
+                            <ShoppingCart size={16} />
+                            Buy Now
+                          </>
+                        )}
+                      </button>
+                    )}
+                  </div>
+                ))}
+              </div>
+
+              {/* Custom domain input */}
+              {showCustomInput ? (
+                <div style={styles.customInputContainer}>
+                  <input
+                    type="text"
+                    placeholder="yourdomain.com"
+                    value={customDomain}
+                    onChange={(e) => setCustomDomain(e.target.value)}
+                    onKeyDown={(e) =>
+                      e.key === "Enter" && handleCustomDomainCheck()
+                    }
+                    style={styles.customInput}
+                    autoFocus
+                  />
+                  <button
+                    style={styles.checkButton}
+                    onClick={handleCustomDomainCheck}
+                  >
+                    Check
+                  </button>
+                  <button
+                    style={styles.cancelButton}
+                    onClick={() => setShowCustomInput(false)}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              ) : (
+                <button
+                  style={styles.customDomainLink}
+                  onClick={() => setShowCustomInput(true)}
+                >
+                  <ExternalLink size={14} />
+                  Search for a different domain
+                </button>
+              )}
+
+              {/* Pricing info */}
+              <div style={styles.pricingInfo}>
+                <p>
+                  <strong>What's included:</strong>
+                </p>
+                <ul style={styles.featureList}>
+                  <li>Free SSL certificate (auto-renewed)</li>
+                  <li>Instant DNS configuration</li>
+                  <li>Connected to your store automatically</li>
+                  <li>24/7 domain monitoring</li>
+                </ul>
+              </div>
+            </>
+          )}
         </>
       )}
     </div>
@@ -303,6 +348,36 @@ const styles: Record<string, React.CSSProperties> = {
   subtitle: {
     fontSize: "0.85rem",
     color: "var(--text-muted)",
+  },
+  tabs: {
+    display: "flex",
+    gap: "8px",
+    marginBottom: "24px",
+    padding: "4px",
+    background: "var(--bg-elevated)",
+    borderRadius: "var(--radius-md)",
+  },
+  tab: {
+    flex: 1,
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: "8px",
+    padding: "12px 16px",
+    background: "transparent",
+    border: "none",
+    borderRadius: "var(--radius-sm)",
+    fontSize: "0.9rem",
+    fontWeight: 500,
+    color: "var(--text-muted)",
+    cursor: "pointer",
+    transition: "all 0.2s",
+  },
+  tabActive: {
+    background: "var(--surface)",
+    color: "var(--text)",
+    fontWeight: 600,
+    boxShadow: "0 1px 3px rgba(0,0,0,0.1)",
   },
   loading: {
     display: "flex",
