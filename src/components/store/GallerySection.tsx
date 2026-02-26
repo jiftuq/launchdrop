@@ -1,11 +1,11 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { ChevronLeft, ChevronRight, X } from "lucide-react";
 
 interface GallerySectionProps {
   gallery: {
     enabled: boolean;
-    title: string;
-    images: string[];
+    title?: string;
+    images?: string[];
   };
   colors: any;
   fonts: any;
@@ -19,8 +19,57 @@ export default function GallerySection({
   theme,
 }: GallerySectionProps) {
   const [selectedImage, setSelectedImage] = useState<number | null>(null);
+  const [validImages, setValidImages] = useState<string[]>([]);
+  const [loading, setLoading] = useState(true);
 
-  if (!gallery.enabled || !gallery.images?.length) return null;
+  const rawImages = gallery.images || [];
+
+  // Validate images - filter out broken/blank ones
+  useEffect(() => {
+    if (!gallery.enabled || rawImages.length === 0) {
+      setLoading(false);
+      return;
+    }
+
+    const validateImages = async () => {
+      const valid: string[] = [];
+
+      await Promise.all(
+        rawImages.map((src) => {
+          return new Promise<void>((resolve) => {
+            if (
+              !src ||
+              src.trim() === "" ||
+              src === "undefined" ||
+              src === "null"
+            ) {
+              resolve();
+              return;
+            }
+
+            const img = new Image();
+            img.onload = () => {
+              if (img.naturalWidth > 10 && img.naturalHeight > 10) {
+                valid.push(src);
+              }
+              resolve();
+            };
+            img.onerror = () => resolve();
+            setTimeout(() => resolve(), 5000);
+            img.src = src;
+          });
+        }),
+      );
+
+      setValidImages(valid);
+      setLoading(false);
+    };
+
+    validateImages();
+  }, [gallery.enabled, rawImages.join(",")]);
+
+  // Don't render if disabled, loading, or no valid images
+  if (!gallery.enabled || loading || validImages.length === 0) return null;
 
   const themeStyles = getThemeStyles(theme);
 
@@ -34,11 +83,11 @@ export default function GallerySection({
             color: colors.text,
           }}
         >
-          {gallery.title}
+          {gallery.title || "Gallery"}
         </h2>
 
         <div style={styles.galleryGrid}>
-          {gallery.images.map((img, i) => (
+          {validImages.map((img, i) => (
             <div
               key={i}
               style={{
@@ -82,14 +131,14 @@ export default function GallerySection({
             onClick={(e) => {
               e.stopPropagation();
               setSelectedImage((i) =>
-                i === 0 ? gallery.images.length - 1 : (i as number) - 1
+                i === 0 ? validImages.length - 1 : (i as number) - 1,
               );
             }}
           >
             <ChevronLeft size={32} />
           </button>
           <img
-            src={gallery.images[selectedImage]}
+            src={validImages[selectedImage]}
             alt={`Gallery ${selectedImage + 1}`}
             style={styles.lightboxImage}
             onClick={(e) => e.stopPropagation()}
@@ -99,14 +148,14 @@ export default function GallerySection({
             onClick={(e) => {
               e.stopPropagation();
               setSelectedImage((i) =>
-                i === gallery.images.length - 1 ? 0 : (i as number) + 1
+                i === validImages.length - 1 ? 0 : (i as number) + 1,
               );
             }}
           >
             <ChevronRight size={32} />
           </button>
           <div style={styles.lightboxCounter}>
-            {selectedImage + 1} / {gallery.images.length}
+            {selectedImage + 1} / {validImages.length}
           </div>
         </div>
       )}

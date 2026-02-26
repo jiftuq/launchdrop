@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import {
   ShoppingCart,
   Truck,
@@ -26,7 +26,65 @@ export default function HeroSection({
   theme,
 }: HeroSectionProps) {
   const [currentImageIndex, setCurrentImageIndex] = useState(0);
-  const images = product.images || [];
+  const [validImages, setValidImages] = useState<string[]>([]);
+  const [loadingImages, setLoadingImages] = useState(true);
+  const rawImages: string[] = product.images || [];
+
+  // Validate images on mount - filter out broken/blank images
+  useEffect(() => {
+    if (rawImages.length === 0) {
+      setLoadingImages(false);
+      return;
+    }
+
+    const validateImages = async () => {
+      const valid: string[] = [];
+
+      await Promise.all(
+        rawImages.map((src) => {
+          return new Promise<void>((resolve) => {
+            // Skip obviously invalid URLs
+            if (
+              !src ||
+              src.trim() === "" ||
+              src === "undefined" ||
+              src === "null"
+            ) {
+              resolve();
+              return;
+            }
+
+            const img = new Image();
+            img.onload = () => {
+              // Check if image has actual dimensions (not a 1x1 pixel)
+              if (img.naturalWidth > 10 && img.naturalHeight > 10) {
+                valid.push(src);
+              }
+              resolve();
+            };
+            img.onerror = () => resolve();
+            // Timeout after 5 seconds
+            setTimeout(() => resolve(), 5000);
+            img.src = src;
+          });
+        }),
+      );
+
+      setValidImages(valid);
+      setLoadingImages(false);
+    };
+
+    validateImages();
+  }, [rawImages.join(",")]);
+
+  // Reset index if it's out of bounds
+  useEffect(() => {
+    if (currentImageIndex >= validImages.length && validImages.length > 0) {
+      setCurrentImageIndex(0);
+    }
+  }, [validImages.length, currentImageIndex]);
+
+  const images = validImages;
 
   const trustBadges = [
     { icon: <Truck size={16} />, text: "Free Shipping" },
@@ -39,12 +97,18 @@ export default function HeroSection({
 
   // Image gallery component
   const ProductImageGallery = () => {
-    if (images.length === 0) {
+    // Show nothing while loading (avoid flash of placeholder)
+    if (loadingImages && rawImages.length > 0) {
       return (
         <div style={{ ...styles.imagePlaceholder, background: colors.surface }}>
-          <ShoppingCart size={64} style={{ color: colors.textMuted }} />
+          <div style={styles.imageLoader} />
         </div>
       );
+    }
+
+    // Show placeholder only if there are truly no valid images
+    if (images.length === 0) {
+      return null; // Don't show placeholder - just hide the gallery
     }
 
     return (
@@ -544,6 +608,14 @@ const styles: Record<string, React.CSSProperties> = {
     display: "flex",
     alignItems: "center",
     justifyContent: "center",
+  },
+  imageLoader: {
+    width: 40,
+    height: 40,
+    border: "3px solid rgba(128, 128, 128, 0.2)",
+    borderTopColor: "rgba(128, 128, 128, 0.6)",
+    borderRadius: "50%",
+    animation: "spin 1s linear infinite",
   },
   trustBadgesSplit: {
     display: "flex",
